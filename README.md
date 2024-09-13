@@ -1,4 +1,4 @@
-## Enviroment
+## Environment
 
 - DB_HOST
 - DB_NAME
