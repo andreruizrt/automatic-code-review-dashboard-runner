@@ -1,0 +1,8 @@
+## Enviroment
+
+- DB_HOST
+- DB_NAME
+- DB_USER
+- DB_PORT
+- DB_PASSWORD
+- NR_SECONDS_NEXT_ATTEMPT
