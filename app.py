@@ -114,8 +114,8 @@ def __get_http_with_auth(url, user, token):
 
 def main():
     nr_seconds_next_attempt = int(os.environ.get('NR_SECONDS_NEXT_ATTEMPT'))
-    git_username = int(os.environ.get('GIT_USER_NAME'))
-    git_token = int(os.environ.get('GIT_TOKEN'))
+    git_username = os.environ.get('GIT_USER_NAME')
+    git_token = os.environ.get('GIT_TOKEN')
 
     while True:
         print("Iniciando verificação de processamento pendente...")
