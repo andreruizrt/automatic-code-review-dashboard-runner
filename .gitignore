@@ -1,2 +1,4 @@
 groups/*
+.idea/*
 !groups/.keep
+

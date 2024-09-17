@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import time
+
 import psycopg2
 
 
@@ -104,8 +105,17 @@ def __generate_md5(string):
     return md5_hash.hexdigest()
 
 
+def __get_http_with_auth(url, user, token):
+    separator = "://"
+    index = url.index(separator) + len(separator)
+
+    return url[0:index] + f"{user}:{token}@" + url[index:]
+
+
 def main():
     nr_seconds_next_attempt = int(os.environ.get('NR_SECONDS_NEXT_ATTEMPT'))
+    git_username = int(os.environ.get('GIT_USER_NAME'))
+    git_token = int(os.environ.get('GIT_TOKEN'))
 
     while True:
         print("Iniciando verificação de processamento pendente...")
@@ -129,6 +139,7 @@ def main():
                 'SELECT P.lk_repository, P.ds_branch_name, G.ds_name FROM project P JOIN "group" G ON G.id_group = P.id_group WHERE P.id_project = %s',
                 (id_project,))
             project_url, branch_name, group_name = cur.fetchone()
+            project_url = __get_http_with_auth(url=project_url, user=git_username, token=git_token)
 
             code_path = f"/tmp/code/{group_name}"
             if os.path.isdir(code_path):
@@ -136,6 +147,11 @@ def main():
             os.makedirs(code_path)
             command = ["git", "clone", "-b", branch_name, project_url, code_path]
             subprocess.run(command)
+
+            if os.path.isdir(code_path):
+                print("Projeto clonado com sucesso")
+            else:
+                print("Projeto com erro ao clonar")
 
             path_resources = f"groups/{group_name}/resources"
             path_extensions = f"{path_resources}/extensions"
@@ -151,8 +167,12 @@ def main():
                         'new_path': file_path.replace(code_path, "")[1:]
                     })
 
+            print(f"Verificando path de extensões [PATH_EXTENSIONS] {path_extensions}")
+
             for extension_name in os.listdir(path_extensions):
                 extension_path = os.path.join(path_extensions, extension_name)
+
+                print(f"Verificando path extensão {extension_name} [EXTENSION_PATH] {extension_path}")
 
                 if os.path.isdir(extension_path):
                     path_output = path_resources + "/output/" + extension_name + "_output.json"
