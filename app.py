@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 import json
 import os
 import shutil
@@ -153,7 +154,11 @@ def main():
             else:
                 print("Projeto com erro ao clonar")
 
-            path_resources = f"groups/{group_name}/resources"
+            stack = inspect.stack()
+            caller_frame = stack[1]
+            caller_file = caller_frame.filename
+            current_dir = os.path.dirname(os.path.abspath(caller_file))
+            path_resources = f"{current_dir}/groups/{group_name}/resources"
             path_extensions = f"{path_resources}/extensions"
 
             comments = []
