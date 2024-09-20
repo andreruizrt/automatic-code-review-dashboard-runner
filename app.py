@@ -27,7 +27,7 @@ def get_db_connection():
     return conn
 
 
-def __write_config(extension, path_resources, path_extensions, path_source, path_output, changes):
+def __write_config(extension, path_resources, path_extensions, path_source, path_output, changes, project_name):
     path_config = path_resources + "/configs/" + extension + "/config.json"
     path_config_final = path_extensions + '/' + extension + "/config.json"
 
@@ -37,7 +37,8 @@ def __write_config(extension, path_resources, path_extensions, path_source, path
         config['path_source'] = path_source
         config['path_output'] = path_output
         config['merge'] = {
-            'changes': changes
+            'changes': changes,
+            'project_name': project_name
         }
 
     with open(path_config_final, 'w') as arquivo:
@@ -137,9 +138,9 @@ def main():
             cur.execute("DELETE FROM issue WHERE id_project = %s", (id_project,))
 
             cur.execute(
-                'SELECT P.lk_repository, P.ds_branch_name, G.ds_name FROM project P JOIN "group" G ON G.id_group = P.id_group WHERE P.id_project = %s',
+                'SELECT P.lk_repository, P.ds_branch_name, G.ds_name, P.ds_name FROM project P JOIN "group" G ON G.id_group = P.id_group WHERE P.id_project = %s',
                 (id_project,))
-            project_url, branch_name, group_name = cur.fetchone()
+            project_url, branch_name, group_name, project_name = cur.fetchone()
             project_url = __get_http_with_auth(url=project_url, user=git_username, token=git_token)
 
             code_path = f"/tmp/code/{group_name}"
@@ -169,7 +170,8 @@ def main():
                 for file in files:
                     file_path = os.path.join(root, file)
                     changes.append({
-                        'new_path': file_path.replace(code_path, "")[1:]
+                        'new_path': file_path.replace(code_path, "")[1:],
+                        'new_file': False
                     })
 
             print(f"Verificando path de extensões [PATH_EXTENSIONS] {path_extensions}")
@@ -183,6 +185,7 @@ def main():
                     path_output = path_resources + "/output/" + extension_name + "_output.json"
 
                     config = __write_config(
+                        project_name=project_name,
                         extension=extension_name,
                         path_resources=path_resources,
                         path_extensions=path_extensions,
