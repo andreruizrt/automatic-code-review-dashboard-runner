@@ -7,7 +7,179 @@ import subprocess
 import time
 
 import psycopg2
+from confluent_kafka import Consumer, KafkaException
 
+def get_kafka_connection():
+    consumer_config = {
+        'bootstrap.servers': os.environ.get('KAFKA_BOOTSTRAP_SERVER'),  
+        'group.id': os.environ.get('KAFKA_GROUP_ID'),       
+        'auto.offset.reset': 'earliest' 
+    }
+
+    topic = 'execution'
+    
+    consumer = Consumer(consumer_config)
+    consumer.subscribe([topic])
+    
+    return consumer
+
+def process_message(message):
+    print(f"Processando mensagem [MESSAGE] {message}")
+    
+    git_username = os.environ.get('GIT_USER_NAME')
+    git_token = os.environ.get('GIT_TOKEN')
+    
+    print("Iniciando processamento das execuções pendentes...")
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    executions = message['pending']
+
+    for execution in executions:
+        id_execution, id_project = execution.values()
+        
+        print(f"Executando processamento {id_execution}")
+
+        cur.execute(
+            "UPDATE execution SET dh_started = CURRENT_TIMESTAMP, ds_detail = 'Processando...' WHERE id_execution = %s",
+            (id_execution,))
+
+        cur.execute("DELETE FROM issue WHERE id_project = %s", (id_project,))
+
+        cur.execute(
+            'SELECT P.lk_repository, P.ds_branch_name, G.ds_name, P.ds_name FROM project P JOIN "group" G ON G.id_group = P.id_group WHERE P.id_project = %s',
+            (id_project,))
+        project_url, branch_name, group_name, project_name = cur.fetchone()
+        project_url = __get_http_with_auth(url=project_url, user=git_username, token=git_token)
+
+        code_path = f"/tmp/code/{group_name}"
+        if os.path.isdir(code_path):
+            shutil.rmtree(code_path)
+        os.makedirs(code_path)
+        command = ["git", "clone", "-b", branch_name, project_url, code_path]
+        subprocess.run(command)
+
+        if os.path.isdir(code_path):
+            print("Projeto clonado com sucesso")
+        else:
+            print("Projeto com erro ao clonar")
+
+        stack = inspect.stack()
+        caller_frame = stack[1]
+        caller_file = caller_frame.filename
+        current_dir = os.path.dirname(os.path.abspath(caller_file))
+        path_resources = f"{current_dir}/groups/{group_name}/resources"
+        path_extensions = f"{path_resources}/extensions"
+
+        comments = []
+        qt_comments_total = 0
+
+        changes = []
+        for root, dirs, files in os.walk(code_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                changes.append({
+                    'new_path': file_path.replace(code_path, "")[1:],
+                    'new_file': False
+                })
+
+        print(f"Verificando path de extensões [PATH_EXTENSIONS] {path_extensions}")
+
+        for extension_name in os.listdir(path_extensions):
+            extension_path = os.path.join(path_extensions, extension_name)
+
+            print(f"Verificando path extensão {extension_name} [EXTENSION_PATH] {extension_path}")
+
+            if os.path.isdir(extension_path):
+                path_output = path_resources + "/output/" + extension_name + "_output.json"
+
+                config = __write_config(
+                    project_name=project_name,
+                    extension=extension_name,
+                    path_resources=path_resources,
+                    path_extensions=path_extensions,
+                    path_source=code_path,
+                    path_output=path_output,
+                    changes=changes,
+                )
+
+                path_extension = path_extensions + "/" + extension_name
+                retorno = __exec_extension(extension_name, path_extension, config["language"], config["path"])
+
+                if retorno != 0:
+                    print(f'automatic-code-review::review - {extension_name} fail')
+                    comment_id = __generate_md5(f"automatic-code-review::review::{extension_name}::fail")
+                    comments.append({
+                        'id': f"{extension_name}:{comment_id}",
+                        'comment': f"Failed to run {extension_name} extension, contact administrator",
+                        'type': extension_name
+                    })
+                    continue
+
+                print(f'automatic-code-review::review - {extension_name} run end, start read output')
+
+                with open(path_output, 'r') as arquivo:
+                    comments_by_extension = json.load(arquivo)
+                    qt_comments = len(comments_by_extension)
+                    qt_comments_total += qt_comments
+
+                    print(f'automatic-code-review::review - {extension_name} [QT_COMMENTS] {qt_comments}')
+
+                    for comment in comments_by_extension:
+                        comment_id = comment['id']
+
+                        comment['type'] = extension_name
+                        comment['id'] = f"{extension_name}:{comment_id}"
+                        comment['comment'] = __comment_and_snipset(comment, code_path)
+
+                        comments.append(comment)
+
+        # TODO TRATAR QUE QUALQUER FALHA DA UM ROOLBACK E GRAVA NO DETALHE A FALHA
+        # TODO DISPARAR ESSA THREAD QUANDO CHAMAR A EXECUCAO, NO CASO CRIAR UM ENDPOINT E ESSE ENDPOINT PARAR O THREAD SLEEP
+        # TODO SE DER FALHA AGENDAR PARA DAQUI A X SEGUNDOS E DAI FICAR PROCESSANDO ATE NAO TER MAIS NADA
+
+        for comment in comments:
+            position = comment['position']
+            tx_issue = comment['comment']
+            lk_file = position['path']
+            nr_start_line = position['startInLine']
+            nr_end_line = position['endInLine']
+            tp_issue = comment['type']
+
+            cur.execute("""
+                INSERT INTO issue (
+                    tx_issue,
+                    lk_file,
+                    nr_start_line,
+                    nr_end_line,
+                    tp_issue,
+                    id_project
+                ) VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
+                )
+            """, (
+                tx_issue,
+                lk_file,
+                nr_start_line,
+                nr_end_line,
+                tp_issue,
+                id_project
+            ))
+
+        cur.execute(
+            "UPDATE execution SET qt_issue = %s, tp_status = 2, dh_ended = CURRENT_TIMESTAMP, ds_detail = 'Processamento finalizado com sucesso' WHERE id_execution = %s",
+            (qt_comments_total, id_execution,))
+        conn.commit()
+
+        print(f"Processamento {id_execution} finalizado")
+
+    cur.close()
+    conn.close()
 
 def get_db_connection():
     db_host = os.environ.get('DB_HOST')
@@ -115,166 +287,35 @@ def __get_http_with_auth(url, user, token):
 
 
 def main():
+    consumer_kafka = get_kafka_connection()
     nr_seconds_next_attempt = int(os.environ.get('NR_SECONDS_NEXT_ATTEMPT'))
-    git_username = os.environ.get('GIT_USER_NAME')
-    git_token = os.environ.get('GIT_TOKEN')
+    
+    try:
+        while True:
+            message = consumer_kafka.poll(timeout=nr_seconds_next_attempt)
 
-    while True:
-        print("Iniciando verificação de processamento pendente...")
-        conn = get_db_connection()
-        cur = conn.cursor()
+            if message is None:
+                continue
 
-        cur.execute("SELECT id_execution, id_project FROM execution WHERE tp_status = 0")
-        executions = cur.fetchall()
+            if message.error():
+                if message.error().code() == KafkaException._PARTITION_EOF:
+                    print(f"Final da partição [TOPICO] {message.topic()} [PARTICAO] {message.partition()} [OFFSET] {message.offset()}")
+                else:
+                    print(f"Ocorreu um erro [ERRO] {message.error()}")
+                continue
 
-        for execution in executions:
-            id_execution, id_project = execution
-            print(f"Executando processamento {id_execution}")
+            message_value = message.value().decode('utf-8')
 
-            cur.execute(
-                "UPDATE execution SET dh_started = CURRENT_TIMESTAMP, ds_detail = 'Processando...' WHERE id_execution = %s",
-                (id_execution,))
-
-            cur.execute("DELETE FROM issue WHERE id_project = %s", (id_project,))
-
-            cur.execute(
-                'SELECT P.lk_repository, P.ds_branch_name, G.ds_name, P.ds_name FROM project P JOIN "group" G ON G.id_group = P.id_group WHERE P.id_project = %s',
-                (id_project,))
-            project_url, branch_name, group_name, project_name = cur.fetchone()
-            project_url = __get_http_with_auth(url=project_url, user=git_username, token=git_token)
-
-            code_path = f"/tmp/code/{group_name}"
-            if os.path.isdir(code_path):
-                shutil.rmtree(code_path)
-            os.makedirs(code_path)
-            command = ["git", "clone", "-b", branch_name, project_url, code_path]
-            subprocess.run(command)
-
-            if os.path.isdir(code_path):
-                print("Projeto clonado com sucesso")
-            else:
-                print("Projeto com erro ao clonar")
-
-            stack = inspect.stack()
-            caller_frame = stack[1]
-            caller_file = caller_frame.filename
-            current_dir = os.path.dirname(os.path.abspath(caller_file))
-            path_resources = f"{current_dir}/groups/{group_name}/resources"
-            path_extensions = f"{path_resources}/extensions"
-
-            comments = []
-            qt_comments_total = 0
-
-            changes = []
-            for root, dirs, files in os.walk(code_path):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    changes.append({
-                        'new_path': file_path.replace(code_path, "")[1:],
-                        'new_file': False
-                    })
-
-            print(f"Verificando path de extensões [PATH_EXTENSIONS] {path_extensions}")
-
-            for extension_name in os.listdir(path_extensions):
-                extension_path = os.path.join(path_extensions, extension_name)
-
-                print(f"Verificando path extensão {extension_name} [EXTENSION_PATH] {extension_path}")
-
-                if os.path.isdir(extension_path):
-                    path_output = path_resources + "/output/" + extension_name + "_output.json"
-
-                    config = __write_config(
-                        project_name=project_name,
-                        extension=extension_name,
-                        path_resources=path_resources,
-                        path_extensions=path_extensions,
-                        path_source=code_path,
-                        path_output=path_output,
-                        changes=changes,
-                    )
-
-                    path_extension = path_extensions + "/" + extension_name
-                    retorno = __exec_extension(extension_name, path_extension, config["language"], config["path"])
-
-                    if retorno != 0:
-                        print(f'automatic-code-review::review - {extension_name} fail')
-                        comment_id = __generate_md5(f"automatic-code-review::review::{extension_name}::fail")
-                        comments.append({
-                            'id': f"{extension_name}:{comment_id}",
-                            'comment': f"Failed to run {extension_name} extension, contact administrator",
-                            'type': extension_name
-                        })
-                        continue
-
-                    print(f'automatic-code-review::review - {extension_name} run end, start read output')
-
-                    with open(path_output, 'r') as arquivo:
-                        comments_by_extension = json.load(arquivo)
-                        qt_comments = len(comments_by_extension)
-                        qt_comments_total += qt_comments
-
-                        print(f'automatic-code-review::review - {extension_name} [QT_COMMENTS] {qt_comments}')
-
-                        for comment in comments_by_extension:
-                            comment_id = comment['id']
-
-                            comment['type'] = extension_name
-                            comment['id'] = f"{extension_name}:{comment_id}"
-                            comment['comment'] = __comment_and_snipset(comment, code_path)
-
-                            comments.append(comment)
-
-            # TODO TRATAR QUE QUALQUER FALHA DA UM ROOLBACK E GRAVA NO DETALHE A FALHA
-            # TODO DISPARAR ESSA THREAD QUANDO CHAMAR A EXECUCAO, NO CASO CRIAR UM ENDPOINT E ESSE ENDPOINT PARAR O THREAD SLEEP
-            # TODO SE DER FALHA AGENDAR PARA DAQUI A X SEGUNDOS E DAI FICAR PROCESSANDO ATE NAO TER MAIS NADA
-
-            for comment in comments:
-                position = comment['position']
-                tx_issue = comment['comment']
-                lk_file = position['path']
-                nr_start_line = position['startInLine']
-                nr_end_line = position['endInLine']
-                tp_issue = comment['type']
-
-                cur.execute("""
-                    INSERT INTO issue (
-                        tx_issue,
-                        lk_file,
-                        nr_start_line,
-                        nr_end_line,
-                        tp_issue,
-                        id_project
-                    ) VALUES (
-                        %s,
-                        %s,
-                        %s,
-                        %s,
-                        %s,
-                        %s
-                    )
-                """, (
-                    tx_issue,
-                    lk_file,
-                    nr_start_line,
-                    nr_end_line,
-                    tp_issue,
-                    id_project
-                ))
-
-            cur.execute(
-                "UPDATE execution SET qt_issue = %s, tp_status = 2, dh_ended = CURRENT_TIMESTAMP, ds_detail = 'Processamento finalizado com sucesso' WHERE id_execution = %s",
-                (qt_comments_total, id_execution,))
-            conn.commit()
-
-            print(f"Processamento {id_execution} finalizado")
-
-        cur.close()
-        conn.close()
-
-        print("Aguardando proxima tentativa")
-        time.sleep(nr_seconds_next_attempt)
-
+            try:
+                json_message = json.loads(message_value)
+                process_message(json_message)
+           
+            except json.JSONDecodeError as erro:
+                print(f"Falha ao converter JSON [ERRO] {erro} [MESSAGE_VALUE] {message_value}")
+            
+    finally:
+        consumer_kafka.close()
+        print("Encerrando consumidor mensageria")
 
 if __name__ == '__main__':
     main()
