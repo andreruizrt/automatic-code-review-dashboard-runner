@@ -33,21 +33,22 @@ def process_message(message):
 
     conn = get_db_connection()
     cur = conn.cursor()
-    executions = message['pending']
 
+    executions = message
     for execution in executions:
-        id_execution, id_project = execution.values()
+        id_execution = execution['id']
+        id_project = execution['projeto']['id']
         
         print(f"Executando processamento {id_execution}")
 
         cur.execute(
-            "UPDATE execution SET dh_started = CURRENT_TIMESTAMP, ds_detail = 'Processando...' WHERE id_execution = %s",
+            "UPDATE execucoes SET data_hora_execucao = CURRENT_TIMESTAMP, descricao = 'Processando...' WHERE id = %s",
             (id_execution,))
 
-        cur.execute("DELETE FROM issue WHERE id_project = %s", (id_project,))
+        cur.execute("DELETE FROM issues WHERE projeto_id = %s", (id_project,))
 
         cur.execute(
-            'SELECT P.lk_repository, P.ds_branch_name, G.ds_name, P.ds_name FROM project P JOIN "group" G ON G.id_group = P.id_group WHERE P.id_project = %s',
+            'SELECT P.url, P.branch, G.nome, P.nome FROM projetos P JOIN grupos G ON G.id = P.id_grupo WHERE P.id = %s',
             (id_project,))
         project_url, branch_name, group_name, project_name = cur.fetchone()
         project_url = __get_http_with_auth(url=project_url, user=git_username, token=git_token)
@@ -147,13 +148,13 @@ def process_message(message):
             tp_issue = comment['type']
 
             cur.execute("""
-                INSERT INTO issue (
-                    tx_issue,
-                    lk_file,
-                    nr_start_line,
-                    nr_end_line,
+                INSERT INTO issues (
+                    descricao,
+                    arquivo,
+                    linha_inicial,
+                    linha_final,
                     tp_issue,
-                    id_project
+                    projeto_id
                 ) VALUES (
                     %s,
                     %s,
@@ -172,7 +173,7 @@ def process_message(message):
             ))
 
         cur.execute(
-            "UPDATE execution SET qt_issue = %s, tp_status = 2, dh_ended = CURRENT_TIMESTAMP, ds_detail = 'Processamento finalizado com sucesso' WHERE id_execution = %s",
+            "UPDATE execucoes SET quantidade_issue = %s, status = 2, data_hora_finalizada = CURRENT_TIMESTAMP, descricao = 'Processamento finalizado com sucesso' WHERE id = %s",
             (qt_comments_total, id_execution,))
         conn.commit()
 
