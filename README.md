@@ -1,13 +1,3 @@
-## Environment
+# DashboardGestaoAPI
 
-- DB_HOST
-- DB_NAME
-- DB_USER
-- DB_PORT
-- DB_PASSWORD
-- NR_SECONDS_NEXT_ATTEMPT
-
-### KAFKA
-
-- KAFKA_BOOTSTRAP_SERVER
-- KAFKA_GROUP_ID
+- Projeto principal com a documentação [acr-gateway](https://github.com/andreruizrt/acr-gateway)
