@@ -12,7 +12,9 @@ def get_kafka_connection():
     consumer_config = {
         'bootstrap.servers': os.environ.get('KAFKA_BOOTSTRAP_SERVER'),  
         'group.id': os.environ.get('KAFKA_GROUP_ID'),       
-        'auto.offset.reset': 'earliest' 
+        'auto.offset.reset': 'earliest',
+        'enable.auto.commit': True,
+        'debug': 'all'
     }
 
     topic = 'execution'
