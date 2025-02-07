@@ -4,9 +4,24 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+import logging
 
 import psycopg2
 from confluent_kafka import Consumer, KafkaException
+
+
+class AutoFlush:
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, data):
+        self.stream.write(data)
+        self.stream.flush()
+
+    def flush(self):
+        self.stream.flush()
+
 
 def get_kafka_connection():
     consumer_config = {
@@ -321,4 +336,9 @@ def main():
         print("Encerrando consumidor mensageria")
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    )
+    sys.stdout = AutoFlush(sys.stdout)
     main()
