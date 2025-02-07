@@ -51,7 +51,7 @@ def process_execution(execution):
     if os.path.isdir(code_path):
         shutil.rmtree(code_path)
     os.makedirs(code_path)
-    command = ["git", "clone", "-b", branch_name, project_url, code_path]
+    command = ["git", "clone", "-v", "-b", branch_name, project_url, code_path]
     subprocess.run(command)
     
     if os.path.isdir(code_path):
